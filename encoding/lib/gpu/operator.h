@@ -1,4 +1,5 @@
 #include <torch/extension.h>
+#include <torch/serialize/tensor.h>
 #include <vector>
 
 at::Tensor ROIAlign_Forward_CUDA(
