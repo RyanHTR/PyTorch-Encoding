@@ -10,6 +10,7 @@ import numpy as np
 from tqdm import tqdm
 
 import torch
+import torch.nn as nn
 from torch.utils import data
 import torchvision.transforms as transform
 from torch.nn.parallel.scatter_gather import gather
@@ -26,6 +27,7 @@ torch_ver = torch.__version__[:3]
 if torch_ver == '0.3':
     from torch.autograd import Variable
 
+
 class Trainer():
     def __init__(self, args):
         self.args = args
@@ -35,11 +37,11 @@ class Trainer():
             transform.Normalize([.485, .456, .406], [.229, .224, .225])])
         # dataset
         data_kwargs = {'transform': input_transform, 'base_size': args.base_size,
-                       'crop_size': args.crop_size}
-        trainset = get_dataset(args.dataset, root=args.dataroot, split=args.train_split, mode='train',
-                                           **data_kwargs)
-        testset = get_dataset(args.dataset, root=args.dataroot, split='val', mode ='val',
-                                           **data_kwargs)
+                       'crop_size': args.crop_size, 'root': args.data_root}
+        trainset = get_dataset(args.dataset, split=args.train_split, mode='train',
+                               **data_kwargs)
+        testset = get_dataset(args.dataset, split='val', mode ='val',
+                              **data_kwargs)
         # dataloader
         kwargs = {'num_workers': args.workers, 'pin_memory': True} \
             if args.cuda else {}
@@ -55,17 +57,19 @@ class Trainer():
                                        base_size=args.base_size, crop_size=args.crop_size)
         print(model)
         # optimizer using different LR
-        params_list = [{'params': model.pretrained.parameters(), 'lr': args.lr},]
+        params_list = [{'params': model.pretrained.parameters(), 'lr': args.lr}, ]
+        if hasattr(model, 'multi_nl'):
+            params_list.append({'params': model.multi_nl.parameters(), 'lr': args.lr * 10})
         if hasattr(model, 'head'):
-            params_list.append({'params': model.head.parameters(), 'lr': args.lr*10})
+            params_list.append({'params': model.head.parameters(), 'lr': args.lr * 10})
         if hasattr(model, 'auxlayer'):
-            params_list.append({'params': model.auxlayer.parameters(), 'lr': args.lr*10})
+            params_list.append({'params': model.auxlayer.parameters(), 'lr': args.lr * 10})
         optimizer = torch.optim.SGD(params_list, lr=args.lr,
-            momentum=args.momentum, weight_decay=args.weight_decay)
+                                    momentum=args.momentum, weight_decay=args.weight_decay)
         # criterions
         self.criterion = SegmentationLosses(se_loss=args.se_loss,
                                             aux=args.aux,
-                                            nclass=self.nclass, 
+                                            nclass=self.nclass,
                                             se_weight=args.se_weight,
                                             aux_weight=args.aux_weight)
         self.model, self.optimizer = model, optimizer
@@ -76,7 +80,7 @@ class Trainer():
         # resuming checkpoint
         if args.resume is not None:
             if not os.path.isfile(args.resume):
-                raise RuntimeError("=> no checkpoint found at '{}'" .format(args.resume))
+                raise RuntimeError("=> no checkpoint found at '{}'".format(args.resume))
             checkpoint = torch.load(args.resume)
             args.start_epoch = checkpoint['epoch']
             if args.cuda:
@@ -123,7 +127,6 @@ class Trainer():
                 'best_pred': self.best_pred,
             }, self.args, is_best)
 
-
     def validation(self, epoch):
         # Fast test during the training
         def eval_batch(model, image, target):
@@ -157,7 +160,7 @@ class Trainer():
             tbar.set_description(
                 'pixAcc: %.3f, mIoU: %.3f' % (pixAcc, mIoU))
 
-        new_pred = (pixAcc + mIoU)/2
+        new_pred = (pixAcc + mIoU) / 2
         if new_pred > self.best_pred:
             is_best = True
             self.best_pred = new_pred

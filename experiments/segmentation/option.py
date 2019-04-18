@@ -19,8 +19,10 @@ class Options():
                             help='backbone name (default: resnet50)')
         parser.add_argument('--dataset', type=str, default='ade20k',
                             help='dataset name (default: pascal12)')
-        parser.add_argument('--dataroot', type=str, default='ade20k',
-                            help='root for dataset')
+        parser.add_argument('--data-root', type=str,
+                            default=os.path.join(os.environ['HOME'], 'data'),
+                            help='dataset root (default: \
+                                    $(HOME)/data)')
         parser.add_argument('--data-folder', type=str,
                             default=os.path.join(os.environ['HOME'], 'data'),
                             help='training dataset folder (default: \

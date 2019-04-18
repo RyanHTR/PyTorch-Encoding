@@ -31,15 +31,16 @@ def test(args):
         transform.ToTensor(),
         transform.Normalize([.485, .456, .406], [.229, .224, .225])])
     # dataset
+    data_kwargs = {'root': args.data_root}
     if args.eval:
         testset = get_segmentation_dataset(args.dataset, split='val', mode='testval',
-                                           transform=input_transform)
+                                           transform=input_transform, **data_kwargs)
     elif args.test_val:
         testset = get_segmentation_dataset(args.dataset, split='val', mode='test',
-                                           transform=input_transform)
+                                           transform=input_transform, **data_kwargs)
     else:
         testset = get_segmentation_dataset(args.dataset, split='test', mode='test',
-                                           transform=input_transform)
+                                           transform=input_transform, **data_kwargs)
     # dataloader
     loader_kwargs = {'num_workers': args.workers, 'pin_memory': True} \
         if args.cuda else {}
@@ -65,8 +66,9 @@ def test(args):
         print("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
 
     print(model)
-    scales = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25] if args.dataset == 'citys' else \
-        [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+    # scales = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25] if args.dataset == 'citys' else \
+    #     [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+    scales = [1.0]
     evaluator = MultiEvalModule(model, testset.num_class, scales=scales).cuda()
     evaluator.eval()
     metric = utils.SegmentationMetric(testset.num_class)
