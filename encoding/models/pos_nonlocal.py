@@ -6,9 +6,36 @@ import torch.nn.functional as F
 
 from ..nn import ConcurrentModule, SyncBatchNorm
 from ..nn import GlobalAvgPool2d
-from PIL import Image
-import os
-import uuid
+
+
+class Partition2d(nn.Module):
+    pass
+
+class Recover2d(nn.Module):
+    pass
+
+def scaler_norm(x):
+    max = x.max()
+    min = x.min()
+    return (x - min) / (max - min)
+
+
+def get_pos_sim(batch_size, height, width):
+    x = torch.arange(width).cuda().float().view(1, width)    # [1, w]
+    x = x.repeat(height, 1).view(-1)                    # [hw]
+    x_dis = (x[:, None] - x[None, :]).abs()            # [hw, hw]
+
+    y = torch.arange(height).cuda().float().view(height, 1)
+    y = y.repeat(1, width).view(-1)
+    y_dis = (y[:, None] - y[None, :]).abs()
+
+    A = x_dis ** 2 + y_dis ** 2
+    A = scaler_norm(A)
+
+    A = A.unsqueeze(0)
+    A = A.repeat(batch_size, 1, 1)    # [batch_size, h*w, h*w]
+
+    return A
 
 
 class Interpolate(nn.Module):
@@ -23,30 +50,13 @@ class Interpolate(nn.Module):
         return x
 
 
-class NonLocal(nn.Module):
+class NonLocalPos(nn.Module):
     """Non-local Block"""
 
     def __init__(self, channel_in, channel_reduced, subsample=True, use_bn=True):
-        super(NonLocal, self).__init__()
-        if subsample:
-            # Reduce dim
-            self.phy = nn.Sequential(
-                nn.Conv2d(channel_in, channel_reduced, kernel_size=1, stride=1),
-                nn.MaxPool2d(kernel_size=2, stride=2),
-            )
-            # Transform
-            self.g = nn.Sequential(
-                nn.Conv2d(channel_in, channel_reduced, kernel_size=1, stride=1),
-                nn.MaxPool2d(kernel_size=2, stride=2),
-            )
-        else:
-            # Reduce dim
-            self.phy = nn.Conv2d(channel_in, channel_reduced, kernel_size=1, stride=1)
-            # Transform
-            self.g = nn.Conv2d(channel_in, channel_reduced, kernel_size=1, stride=1)
-
-        # Reduce dim
-        self.theta = nn.Conv2d(channel_in, channel_reduced, kernel_size=1, stride=1)
+        super(NonLocalPos, self).__init__()
+        # Transform
+        self.g = nn.Conv2d(channel_in, channel_reduced, kernel_size=1, stride=1)
 
         if use_bn:
             # Extend
@@ -58,24 +68,14 @@ class NonLocal(nn.Module):
             self.extend = nn.Conv2d(channel_reduced, channel_in, kernel_size=1, stride=1)
 
     def forward(self, x):
-        H, W = x.size(2), x.size(3)
+        batch_size, H, W = x.size(0), x.size(2), x.size(3)
+
+        # get similarity
+        x_sim = get_pos_sim(batch_size, H, W)     #[batch, HW, HW]
 
         # Reduce dim and transform
-        x_theta = self.theta(x)                # [batch, channel_reduced, H, W]
-        x_phy = self.phy(x)                    # [batch, channel_reduced, H / 2, W / 2]
-        x_g = self.g(x)                        # [batch, channel_reduced, H / 2, W / 2]
-
-        x_theta = x_theta.view(x_theta.size(0), x_theta.size(1), -1)   # [batch, channel_reduced, H * W]
-        x_theta = torch.transpose(x_theta, 1, 2)                       # [batch, H * W, channel_reduced]
-
-        x_phy = x_phy.view(x_phy.size(0), x_phy.size(1), -1)           # [batch, channel_reduced, H * W / 4]
-
-        # Similarity matrix between every spatial location pair
-        x_sim = torch.bmm(x_theta, x_phy)                              # [batch, H * W, H * W / 4]
-        x_sim /= x_sim.size(-1)  # scaling by 1/N
-        x_sim = torch.transpose(x_sim, 1, 2)                           # [batch, H * W / 4, H * W]
-
-        x_g = x_g.view(x_g.size(0), x_g.size(1), -1)                   # [batch, channel_reduced, H * W / 4]
+        x_g = self.g(x)                        # [batch, channel_reduced, H, W]
+        x_g = x_g.view(x_g.size(0), x_g.size(1), -1)                   # [batch, channel_reduced, H * W]
 
         # Self-attention
         x_out = torch.bmm(x_g, x_sim)                                  # [batch, channel_reduced, H * W]
@@ -85,47 +85,6 @@ class NonLocal(nn.Module):
         x_out = self.extend(x_out)                                     # [batch, channel_in, H, W]
 
         return x_out
-
-
-def save_attn(attn):
-    directory = '/home/htr/project/NeurlPS2019/code/PyTorch-Encoding/runs/pcontext/multi_nl_fcn/multi_nonlocal_1x2x4x_attn2scale_deconv/vis/attn'
-    # print("visualize directory : ", directory)
-    if not os.path.exists(directory):
-        os.mkdir(directory)
-
-    image_name = str(uuid.uuid4()) + '.png'
-    target = Image.new('L', (240*3 + 20, 240), color=255)
-    ims = F.interpolate(attn, scale_factor=4, mode='bilinear')
-    ims = ims.numpy().squeeze()    # [3, 60, 60]
-    ims = (ims * 255).clip(0, 255)
-    ims = ims.astype('uint8')
-    print(type(ims))
-    print(ims.dtype)
-    print(ims.shape)
-    im1, im2, im3 = ims[0], ims[1], ims[2]
-    print(im1.shape)
-    target.paste(Image.fromarray(im1), (0, 0))
-    target.paste(Image.fromarray(im2), (250, 0))
-    target.paste(Image.fromarray(im3), (500, 0))
-
-    # print("saving to ", os.path.join(directory, image_name))
-    target.save(os.path.join(directory, image_name))
-
-
-class ConcatFusion(nn.Module):
-    def __init__(self, channel_in, group=2):
-        super(ConcatFusion, self).__init__()
-        print("Concat fusion")
-        self.group_num = group
-
-        self.fusion = nn.Conv2d(channel_in*group, channel_in, kernel_size=3, stride=1, padding=1)
-        self.bn = SyncBatchNorm(channel_in)
-
-    def forward(self, x):
-        x_fuse = torch.cat(x, dim=1)    # [batch, channel_in*group, H, W]
-        x_fuse = self.fusion(x_fuse)       # [batch, channel_in, H, W]
-        x_fuse = self.bn(x_fuse)
-        return x_fuse
 
 
 class ChannelSelectiveFusion(nn.Module):
@@ -177,7 +136,7 @@ class ChannelSelectiveFusion(nn.Module):
 
 class AttentionScaleFusion(nn.Module):
     """Attention to scale"""
-    def __init__(self, channel_in, group=2, ratio=4, saved=False):
+    def __init__(self, channel_in, group=2, ratio=4):
         super(AttentionScaleFusion, self).__init__()
         print("Selective fusion using attention to scale")
         self.group_num = group
@@ -185,32 +144,28 @@ class AttentionScaleFusion(nn.Module):
 
         # attention module
         channel_inter = channel_in // ratio
-        self.attention_layer = nn.Sequential(nn.Conv2d(channel_in*group, channel_inter, 3, stride=1, padding=1),
-                                             SyncBatchNorm(channel_inter),
-                                             nn.ReLU(inplace=True),
-                                             nn.Conv2d(channel_inter, group, 1))
-        # self.attention_layer = nn.Sequential(nn.Conv2d(channel_in, channel_inter, 3, stride=1, padding=1),
+        # self.attention_layer = nn.Sequential(nn.Conv2d(channel_in*group, channel_inter, 3, stride=1, padding=1),
         #                                      SyncBatchNorm(channel_inter),
         #                                      nn.ReLU(inplace=True),
         #                                      nn.Conv2d(channel_inter, group, 1))
+        self.attention_layer = nn.Sequential(nn.Conv2d(channel_in, channel_inter, 3, stride=1, padding=1),
+                                             SyncBatchNorm(channel_inter),
+                                             nn.ReLU(inplace=True),
+                                             nn.Conv2d(channel_inter, group, 1))
 
         self.softmax = nn.Softmax(dim=1)
         self.bn = SyncBatchNorm(channel_in)
 
-        self.saved = saved
-
     def forward(self, x):
         # x: (group, [batch, channel_in, H, W])
-        # x_fuse = torch.zeros_like(x[0])            # [batch, channel_in, H, W]
-        # for x_i in x:
-        #     x_fuse = x_fuse + x_i
-        x_fuse = torch.cat(x, dim=1)          # [batch, channel_in * group, H, W]
+        x_fuse = torch.zeros_like(x[0])            # [batch, channel_in, H, W]
+        for x_i in x:
+            x_fuse = x_fuse + x_i
+        # x_fuse = torch.cat(x, dim=1)          # [batch, channel_in * group, H, W]
 
         # get attention map
         attn = self.attention_layer(x_fuse)   # [batch, group, H, W]
         attn = self.softmax(attn)
-        if self.saved:
-            save_attn(attn.cpu().data)
         attn = torch.split(attn, 1, dim=1)  # (group, [batch, 1, H, W])
 
         # weighted sum
@@ -228,22 +183,17 @@ class MultiNonLocal(nn.Module):
     def __init__(self, channel_in, channel_reduced, branches=[1]):
         super(MultiNonLocal, self).__init__()
 
-        print("MultiNonLocal Module branches: ", branches)
+        print("MultiNonLocal Module Regions: ", branches)
 
         self.nonlocal_layers = nn.ModuleList()
         for i, ratio in enumerate(branches):
             self.nonlocal_layers.append(nn.Sequential())
             if ratio > 1:
-                self.nonlocal_layers[i].add_module("maxpool_{}x".format(ratio), nn.MaxPool2d(ratio, ratio))
-            self.nonlocal_layers[i].add_module('nonlocal_{}x'.format(ratio), NonLocal(channel_in, channel_reduced, subsample=False))
+                self.nonlocal_layers[i].add_module("partition_{}x".format(ratio), Partition2d(ratio=ratio))
+            self.nonlocal_layers[i].add_module('nonlocal_pos_{}x'.format(ratio), NonLocalPos(channel_in, channel_reduced, subsample=False))
             self.nonlocal_layers[i].add_module('relu_{}x'.format(ratio), nn.ReLU(inplace=True))
             if ratio > 1:
-                self.nonlocal_layers[i].add_module('deconv_{}x'.format(ratio),
-                                                   nn.Sequential(nn.ConvTranspose2d(channel_in, channel_in, ratio + 1,
-                                                                                    ratio, padding=1, output_padding=1,
-                                                                                    groups=4),
-                                                                 SyncBatchNorm(channel_in),
-                                                                 nn.ReLU(inplace=True)))
+                self.nonlocal_layers[i].add_module('recover_{}x'.format(ratio), Recover2d(ratio=ratio))
         if len(branches) > 1:
             self.fusion = AttentionScaleFusion(channel_in, group=len(branches))
 

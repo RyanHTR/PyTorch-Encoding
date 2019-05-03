@@ -12,7 +12,7 @@ from torch.nn.functional import interpolate
 from ..nn import ConcurrentModule, SyncBatchNorm
 
 from .base import BaseNet
-from .multi_nonlocal import MultiNonLocal
+from .region_nonlocal import MultiNonLocal
 
 __all__ = ['MultiNLFCN', 'get_multi_nl_fcn']
 
@@ -42,7 +42,7 @@ class MultiNLFCN(BaseNet):
     >>> print(model)
     """
     def __init__(self, nclass, backbone, aux=True, se_loss=False, with_global=False,
-                 norm_layer=SyncBatchNorm, branches=[1], **kwargs):
+                 norm_layer=SyncBatchNorm, branches=(1,), **kwargs):
         super(MultiNLFCN, self).__init__(nclass, backbone, aux, se_loss, norm_layer=norm_layer, **kwargs)
         self.multi_nl = nn.Sequential(
             nn.Conv2d(2048, 2048, kernel_size=1),
@@ -142,7 +142,7 @@ def get_multi_nl_fcn(dataset='pascal_voc', backbone='resnet50', pretrained=False
     # infer number of classes
     from ..datasets import datasets, acronyms
     model = MultiNLFCN(datasets[dataset.lower()].NUM_CLASS, backbone=backbone,
-                       root=root, branches=[1, 2], **kwargs)
+                       root=root, branches=(1, 2), **kwargs)
     # Actually we don't have pretrained model for multi_nl_fcn now
     if pretrained:
         from .model_store import get_model_file

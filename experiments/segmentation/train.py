@@ -60,10 +60,13 @@ class Trainer():
         params_list = [{'params': model.pretrained.parameters(), 'lr': args.lr}, ]
         if hasattr(model, 'multi_nl'):
             params_list.append({'params': model.multi_nl.parameters(), 'lr': args.lr * 10})
+            print("multi_nl params lr 10x")
         if hasattr(model, 'head'):
             params_list.append({'params': model.head.parameters(), 'lr': args.lr * 10})
+            print("head params lr 10x")
         if hasattr(model, 'auxlayer'):
             params_list.append({'params': model.auxlayer.parameters(), 'lr': args.lr * 10})
+            print("auxlayer params lr 10x")
         optimizer = torch.optim.SGD(params_list, lr=args.lr,
                                     momentum=args.momentum, weight_decay=args.weight_decay)
         # criterions
@@ -103,6 +106,7 @@ class Trainer():
     def training(self, epoch):
         train_loss = 0.0
         self.model.train()
+        print("Model Name: ", self.args.checkname)
         tbar = tqdm(self.trainloader)
         for i, (image, target) in enumerate(tbar):
             self.scheduler(self.optimizer, i, epoch, self.best_pred)
